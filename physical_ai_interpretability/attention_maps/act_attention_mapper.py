@@ -50,6 +50,17 @@ class ACTPolicyWithAttention:
         not self.policy.model.decoder.layers:
             raise AttributeError("Policy model structure does not match expected ACT architecture for target_layer.")
         self.target_layer = self.policy.model.decoder.layers[-1].multihead_attn
+
+    def _get_image_backbone(self):
+        """Return the image backbone used by the wrapped ACT model."""
+        model = self.policy.model
+        if hasattr(model, "backbone"):
+            return model.backbone
+        if hasattr(model, "vision_encoder") and hasattr(model.vision_encoder, "resnet_feature_extractor"):
+            return model.vision_encoder.resnet_feature_extractor
+        raise AttributeError(
+            "Policy model does not expose an image backbone. Expected 'backbone' or 'vision_encoder.resnet_feature_extractor'."
+        )
         
     def select_action(self, observation: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor, List[np.ndarray]]:
         """
@@ -131,6 +142,7 @@ class ACTPolicyWithAttention:
         For ResNet, this is typically H/32 × W/32
         """
         spatial_shapes = []
+        backbone = self._get_image_backbone()
         for img_tensor in images:
             if img_tensor is None:
                 spatial_shapes.append((0, 0))
@@ -143,9 +155,10 @@ class ACTPolicyWithAttention:
                 else:
                     img_tensor_batched = img_tensor
 
-                img_tensor_batched = img_tensor_batched.to(next(self.policy.model.vision_encoder.resnet_feature_extractor.parameters()).device)
+                # img_tensor_batched = img_tensor_batched.to(next(self.policy.model.vision_encoder.resnet_feature_extractor.parameters()).device)
+                img_tensor_batched = img_tensor_batched.to(next(self.policy.model.parameters()).device)
 
-                feature_map_dict = self.policy.model.vision_encoder.resnet_feature_extractor(img_tensor_batched) # Use batched tensor
+                feature_map_dict = backbone(img_tensor_batched)
                 feature_map = feature_map_dict["feature_map"]
                 h, w = feature_map.shape[2], feature_map.shape[3]
                 spatial_shapes.append((h, w))

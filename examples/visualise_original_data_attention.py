@@ -211,10 +211,14 @@ def analyze_episode(dataset: LeRobotDataset,
                    output_dir: str,
                    model_dtype: torch.dtype = torch.float32) -> Dict:
     """
+    EN:
     Run policy inference on an episode and analyze proprioceptive importance.
     
     Returns:
         Dictionary containing analysis results
+
+    JP:
+    エピソードに対してポリシー推論を実行し、
     """
     
     # Filter dataset to only include the specified episode
@@ -346,6 +350,8 @@ def analyze_episode(dataset: LeRobotDataset,
     return analysis_results
 
 def main():
+    # Set up argument parser
+    # 解析対象のデータセットエピソードを指定するための引数を定義
     parser = argparse.ArgumentParser(description="Analyze policy behavior on dataset episodes")
     parser.add_argument("--dataset-repo-id", type=str, required=True,
                         help="Repository ID of the dataset to analyze")
@@ -362,10 +368,13 @@ def main():
     parser.add_argument("--model-dtype", type=str, default="float32",
                         choices=["float32", "float16", "bfloat16"],
                         help="Model data type")
+    parser.add_argument("--root", type=str, default=None,
+                        help="Root directory for datasets (if not using Hugging Face Hub)")
     
     args = parser.parse_args()
     
     # Set up device and dtype
+    # 解析に使用するデバイスとモデルのデータ型を設定
     device = torch.device(args.device)
     dtype_map = {
         "float32": torch.float32,
@@ -380,7 +389,10 @@ def main():
     
     # Load dataset
     try:
-        dataset = LeRobotDataset(args.dataset_repo_id)
+        dataset = LeRobotDataset(
+            repo_id=args.dataset_repo_id,
+            root=args.root
+        )
         print(f"Dataset loaded successfully. Total episodes: {dataset.num_episodes}")
         
     except Exception as e:
@@ -388,6 +400,7 @@ def main():
         return
     
     # Determine which episodes to analyze
+    # 可視化するエピソードを指定するか、全てのエピソードを分析するかを決定
     if args.episode_id is not None:
         # Single episode analysis
         if args.episode_id >= dataset.num_episodes:
@@ -402,14 +415,16 @@ def main():
     # Load policy
     try:
         print("Loading policy...")
-        train_dataset = make_dataset_without_config(TRAIN_DATASET_REPO_IDS)
+        # train_dataset = make_dataset_without_config(TRAIN_DATASET_REPO_IDS)
         policy, policy_cfg = load_policy(
             args.policy_path,
-            train_dataset.meta,
+            # train_dataset.meta,
+            dataset.meta,
             args.policy_overrides
         )
         
-        if hasattr(policy, 'model'):
+        # hasattr：指定のオブジェクトが特定の属性を持っているかを確認する
+        if hasattr(policy, 'model'): 
             policy.model.eval()
             policy.model.to(device)
         elif hasattr(policy, 'eval'):
@@ -422,13 +437,13 @@ def main():
         return
     
     # Run analysis on all specified episodes
+    # 指定されたエピソードに対して分析を実行し、結果を収集
     all_results = []
     failed_episodes = []
-    
     for episode_id in tqdm(episodes_to_analyze, desc="Analyzing episodes"):
         try:
             print(f"\nStarting analysis of episode {episode_id}...")
-            results = analyze_episode(
+            results = analyze_episode(  # ここで実際の分析関数を呼び出す
                 dataset=dataset,
                 policy=policy,
                 episode_id=episode_id,
