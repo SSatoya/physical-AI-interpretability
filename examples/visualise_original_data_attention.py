@@ -91,9 +91,15 @@ def encode_video_ffmpeg(frames, output_filename, fps, pix_fmt_in="bgr24"):
         print(f"An unexpected error occurred during video encoding for {output_filename}: {e}")
 
 def load_policy(policy_path: str, dataset_meta, policy_overrides: list = None) -> Tuple[torch.nn.Module, dict]:
-    """Load and initialize a policy from checkpoint."""
+    """
+    EN: Load and initialize a policy from checkpoint.
+    JP: 
+    チェックポイントからポリシーをロードして初期化する。
+    LeRobotのACTPolicyではなく，オリジナルのACTPolicyWithAttentionを使用して、注意マップの可視化を可能にする
+    """
     
     # Load regular LeRobot policy
+    # ポリシーの設定をロードする。必要に応じて、コマンドライン引数からのオーバーライドも適用する。
     if policy_overrides:
         # Convert list of "key=value" strings to dict
         overrides = {}
@@ -106,7 +112,8 @@ def load_policy(policy_path: str, dataset_meta, policy_overrides: list = None) -
         policy_cfg.pretrained_path = policy_path
 
     # NOTE: policy has to be an ACT policy for this to work
-    policy = make_policy(policy_cfg, ds_meta=dataset_meta)
+    # NOTE: 注意マップの可視化を行うためには、ポリシーがACTアーキテクチャである必要がある
+    policy = make_policy(policy_cfg, ds_meta=dataset_meta)  # ベースとなるACTPolicyをロード
         # Create processors - only provide dataset_stats if not resuming from saved processors
     processor_kwargs = {}
     postprocessor_kwargs = {}
@@ -135,20 +142,26 @@ def load_policy(policy_path: str, dataset_meta, policy_overrides: list = None) -
         **postprocessor_kwargs,
     )
         
-    policy = ACTPolicyWithAttention(policy, preprocessor)
+    policy = ACTPolicyWithAttention(policy, preprocessor)  # ACTPolicyWithAttentionでラップして、注意マップの可視化機能を追加する
     return policy, policy_cfg
 
 def prepare_observation_for_policy(frame: dict, 
                                  device: torch.device, 
                                  model_dtype: torch.dtype = torch.float32,
                                  debug: bool = False) -> dict:
-    """Convert dataset frame to policy observation format."""
+    """
+    EN:
+    Convert dataset frame to policy observation format.
+    
+    JP:
+    データセットのフレームをAIモデルの入力形式に変換する関数
+    """
     observation = {}
     
     for key, value in frame.items():
         if "image" in key:
             if debug:
-                print(f"Processing {key}: original shape {value.shape}, dtype {value.dtype}")
+                print(f"Processing {key}: original shape {value.shape}, dtype {value.dtype}")  # Ex:Processing observation.images.left_wrist_cam: original shape torch.Size([3, 480, 640]), dtype torch.float32
             
             # Convert image to policy format: channel first, float32 in [0,1], with batch dimension
             if isinstance(value, torch.Tensor):
@@ -218,19 +231,32 @@ def analyze_episode(dataset: LeRobotDataset,
         Dictionary containing analysis results
 
     JP:
-    エピソードに対してポリシー推論を実行し、
+    指定された1つのエピソードをフレームごとにAIモデルに推論させ、
+    モデルが画像の『どこに注目して行動を決定したか』を可視化した動画を生成する
+
+    Arguments:
+        dataset: データセットオブジェクト
+        policy: 推論に使用するAIモデル
+        episode_id: 分析対象のエピソードID
+        device: 推論に使用するデバイス（例：torch.device('cuda')）
+        output_dir: 分析結果の出力先ディレクトリ
+        model_dtype: モデルのデータ型（例：torch.float32）
+
+    Returns:
+        エピソードの分析結果を含む辞書
     """
     
     # Filter dataset to only include the specified episode
+    # 指定されたエピソードのフレームのみを抽出
     episode_frames = dataset.hf_dataset.filter(lambda x: x["episode_index"] == episode_id)
     episode_length = len(episode_frames)
-    
     if episode_length == 0:
         raise ValueError(f"Episode {episode_id} not found or is empty")
     
     print(f"Analyzing episode {episode_id} with {episode_length} frames")
     
     # Initialize storage for results
+    # 分析結果や、後で動画にするための画像フレームを保存用の変数を初期化
     attention_videos = None
     side_by_side_buffer = []
     actions_predicted = []
@@ -238,10 +264,13 @@ def analyze_episode(dataset: LeRobotDataset,
     timestamps = []
     
     # Debug policy configuration
+    # モデルの入力特徴量やチャンクサイズなどのデバッグ出力
     if hasattr(policy, 'config'):
         print("=== Policy Configuration ===")
         
         # Handle image features
+        # モデル内の画像名称をデバッグ出力
+        # （Ex：['observation.images.head_cam', 'observation.images.left_wrist_cam', 'observation.images.right_wrist_cam']）
         image_features = getattr(policy.config, 'image_features', None)
         if image_features:
             if hasattr(image_features, '__iter__') and not isinstance(image_features, str):
@@ -265,17 +294,24 @@ def analyze_episode(dataset: LeRobotDataset,
         print("=" * 30)
     
     # Process each frame
-    for i in tqdm(range(episode_length), desc="Processing frames"):
+    # 取り出したデータを1フレームずつループ処理（推論）
+    for i in tqdm(range(episode_length), desc="Processing frames"):  # tqdmで進捗バーを表示
+        # Load frame and timestamp
+        # データセットからフレームを読み込み、タイムスタンプを保存
         frame = dataset[episode_frames[i]['index'].item()]
         timestamps.append(frame['timestamp'].item())
                 
         # Prepare observation for policy (with debug on first frame)
+        # AIモデルが計算できる形式（テンソルの形状変更、正規化、GPUへの移動など）に変換
         observation = prepare_observation_for_policy(frame, device, model_dtype, debug=(i==0))
                 
         # Run policy inference
+        # PyTorchの推論モード（学習せず計算を高速化するモード）に入り、変換したデータobservation をAIモデルに渡して、次のアクションを予測
         with torch.inference_mode():
             if hasattr(policy, 'select_action'):
-                result = policy.select_action(observation)
+                # ACTPolicyWithAttentionのselect_actionは、アクションと注意マップの両方を返すように拡張されているため、ここで両方を受け取る
+                # physical-AI-interpretability/physical_ai_interpretability/attention_maps/act_attention_mapper.py
+                result = policy.select_action(observation) 
                 
                 if isinstance(result, tuple):
                     # ACT policy with attention
@@ -294,6 +330,7 @@ def analyze_episode(dataset: LeRobotDataset,
                         print(f"Detected {num_cameras} camera views for attention visualization")
                     
                     # Store attention frames
+                    # Attention Heat Map画像をリストに保存していく
                     if attention_videos is not None:
                         valid_frames_this_step = []
                         for j, vis in enumerate(visualizations):
@@ -304,6 +341,7 @@ def analyze_episode(dataset: LeRobotDataset,
                                 valid_frames_this_step.append(None)
                         
                         # Create side-by-side frame
+                        # すべてのカメラビューが有効なフレームであれば、横に並べたフレームも保存する(連結して保存)
                         if len(valid_frames_this_step) == num_cameras and all(f is not None for f in valid_frames_this_step):
                             first_height = valid_frames_this_step[0].shape[0]
                             if all(f.shape[0] == first_height for f in valid_frames_this_step):
@@ -324,6 +362,7 @@ def analyze_episode(dataset: LeRobotDataset,
             actions_ground_truth.append(frame['action'].numpy())
     
     # Generate output files
+    # 結果出力用directoryを作成し、ffmpegを使って動画ファイルを保存する
     os.makedirs(output_dir, exist_ok=True)
     timestamp_str = time.strftime("%Y%m%d-%H%M%S")
     
@@ -416,7 +455,7 @@ def main():
     try:
         print("Loading policy...")
         # train_dataset = make_dataset_without_config(TRAIN_DATASET_REPO_IDS)
-        policy, policy_cfg = load_policy(
+        policy, policy_cfg = load_policy(  # ここでオリジナルのACTPolicyWithAttentionを使用してACTPolicyをロード
             args.policy_path,
             # train_dataset.meta,
             dataset.meta,
