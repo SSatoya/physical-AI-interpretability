@@ -12,7 +12,12 @@ class ACTPolicyWithAttention:
     ACTPolicyのラッパーで、Transformerの注意マップの可視化機能を提供します。
     """
     
-    def __init__(self, policy, preprocessor, image_shapes=None, specific_decoder_token_index: Optional[int] = None):
+    def __init__(self,
+            policy,
+            preprocessor,
+            image_shapes=None,
+            specific_decoder_token_index: Optional[int] = None
+            ):
         """
         EN:
         Initialize the wrapper with an ACTPolicy.
@@ -70,6 +75,8 @@ class ACTPolicyWithAttention:
         
         # ここで最後のTransformer層のMultiheadAttentionモジュールをターゲットにしている。モデル構造によってはここを調整する必要がある。
         self.target_layer = self.policy.model.decoder.layers[-1].multihead_attn  
+        # encoder_layer_idx = 3  # 0~3
+        # self.target_layer = self.policy.model.encoder.layers[encoder_layer_idx].self_attn  # encoder：multi head attention=self_atten
 
     def _get_image_backbone(self):
         """
@@ -168,7 +175,7 @@ class ACTPolicyWithAttention:
             action = self.policy.select_action(observation)
             if isinstance(action, tuple):
                 action, _ = action
-            self.policy.reset()  # チャンクサイズ分を保持しているが，今回は1ステップ分のアクションしか必要ないため，リセットして次のステップに備える．
+            # self.policy.reset()  # チャンクサイズ分を保持しているが，今回は1ステップ分のアクションしか必要ないため，リセットして次のステップに備える．
 
         # Remove the hook
         # フックを削除して、次のステップで再度登録できるようにする。
@@ -177,15 +184,24 @@ class ACTPolicyWithAttention:
                 
         # Process the attention weights
         if attention_weights_capture:
-            attn = attention_weights_capture[0].to(action.device)  # memo:(1, 100, 902)
+            attn = attention_weights_capture[0].to(action.device)  # memo:decoder(1, 100, 902), encoder(1, 902, 902)
+
+            if attn.shape[1] == attn.shape[2]:  # if self_attention:
+                attn = attn[:, 0:1, :]
+
             attention_maps, proprio_attention = self._map_attention_to_images(attn, image_spatial_shapes)
             self.last_attention_maps = attention_maps
             self.last_proprio_attention = proprio_attention  # Store for visualization
         else:
-            print("Warning: No attention weights were captured.")
-            attention_maps = [None] * self.num_images
-            self.last_attention_maps = attention_maps
-            self.last_proprio_attention = 0.0  # Store for visualization
+            # print("Warning: No attention weights were captured.")
+            # attention_maps = [None] * self.num_images
+            # self.last_attention_maps = attention_maps
+            # self.last_proprio_attention = 0.0  # Store for visualization
+            if self.last_attention_maps is not None:
+                attention_maps = self.last_attention_maps
+            else:
+                attention_maps = [None] * self.num_images 
+            proprio_attention = getattr(self, 'last_proprio_attention', 0.0)
             
         return action, attention_maps
 
