@@ -219,36 +219,55 @@ class ACTPolicyWithAttention:
     def _get_image_spatial_shapes(self, images: List[torch.Tensor]) -> List[Tuple[int, int]]:
         """
         EN:
-        Get the spatial shapes of the feature maps after ResNet processing.
-        For ResNet, this is typically H/32 × W/32
+        Get the spatial shapes of the feature maps. 
+        For ResNet, runs through backbone. For DINOv3 (vits16), calculates mathematically.
 
         JP:
-        ResNet処理後の特徴マップの空間形状を取得
-        ResNetの場合、通常はH/32 × W/32となる
+        特徴マップの空間形状を取得
+        ResNetの場合はバックボーンを通し、DINOv3の場合はパッチサイズ(16)から計算する。
         """
         spatial_shapes = []
-        backbone = self._get_image_backbone()  # バックボーン（画像処理部分）を取得
+        
+        # 現在のポリシーがDINOv3を使用しているかチェック
+        is_dinov3 = hasattr(self.config, 'vision_backbone') and 'dinov3' in self.config.vision_backbone
+        # NOTE:
+        # act_with_dinov3/modeling_act.py では DINOv3 の patch tokens を 2x2 avg_pool してから
+        # Transformer encoder に渡しているため、実効ストライドは 16 * 2 = 32 になる。
+        # ここが 16 のままだと「Expected 1200, got 900」のような token 数不一致が発生する。
+        dino_patch_size = 16
+        dino_post_pool_stride = 2
+        
+        # ResNetの場合のみバックボーンを取得
+        if not is_dinov3:
+            backbone = self._get_image_backbone()  
+
         for img_tensor in images:
             if img_tensor is None:
                 spatial_shapes.append((0, 0))
                 continue
                 
-            # Run image through backbone to get feature map shape
-            # ここでは、画像テンソルをバックボーンに通して特徴マップを取得し、その空間的な形状を記録
-            with torch.no_grad():
-                if img_tensor.dim() == 3:
-                    img_tensor_batched = img_tensor.unsqueeze(0)
-                else:
-                    img_tensor_batched = img_tensor
+            if is_dinov3:
+                # DINOv3 (vits16) 用の処理
+                # 実際のモデル側では patch_size=16 後に 2x2 avg pooling を実施しているため、
+                # 可視化でも同じトークン格子サイズを使う。
+                h_img, w_img = img_tensor.shape[-2:]
+                h_feat = h_img // (dino_patch_size * dino_post_pool_stride)
+                w_feat = w_img // (dino_patch_size * dino_post_pool_stride)
+                spatial_shapes.append((h_feat, w_feat))
+            else:
+                # 【元のまま】ResNet用の処理
+                with torch.no_grad():
+                    if img_tensor.dim() == 3:
+                        img_tensor_batched = img_tensor.unsqueeze(0)
+                    else:
+                        img_tensor_batched = img_tensor
 
-                # img_tensor_batched = img_tensor_batched.to(next(self.policy.model.vision_encoder.resnet_feature_extractor.parameters()).device)
-                img_tensor_batched = img_tensor_batched.to(next(self.policy.model.parameters()).device)
+                    img_tensor_batched = img_tensor_batched.to(next(self.policy.model.parameters()).device)
 
-                feature_map_dict = backbone(img_tensor_batched)
-                feature_map = feature_map_dict["feature_map"]
-                h, w = feature_map.shape[2], feature_map.shape[3]
-                spatial_shapes.append((h, w))
-                # print(f"Extracted spatial shape for image: {h}x{w}")  # 15x20: ResNetの特徴マップの空間的な形状を出力
+                    feature_map_dict = backbone(img_tensor_batched)
+                    feature_map = feature_map_dict["feature_map"]
+                    h, w = feature_map.shape[2], feature_map.shape[3]
+                    spatial_shapes.append((h, w))
 
         return spatial_shapes
     
